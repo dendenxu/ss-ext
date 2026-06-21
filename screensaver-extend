@@ -1,0 +1,230 @@
+#!/bin/bash
+#
+# screensaver-extend (ss-ext) — extend an MDM-forced short screensaver / auto-lock
+# timeout on macOS WITHOUT modifying the managed configuration profile.
+#
+# How it works
+#   macOS fires the screen saver after `com.apple.screensaver idleTime` seconds of
+#   HID inactivity. That value is often pushed as a *managed preference* by an MDM
+#   profile, so it can't be changed in System Settings and `defaults write` is
+#   silently overridden. But any app can hold a PreventUserIdleDisplaySleep power
+#   assertion to suppress the idle trigger — that is exactly why a playing video
+#   keeps the screen awake.
+#
+#   This daemon polls the real HID idle time. While idle < TIMEOUT it holds the
+#   assertion (via `caffeinate -d`) so the short screen saver never triggers. Once
+#   idle >= TIMEOUT it releases the assertion and macOS immediately runs the screen
+#   saver + lock per the existing policy. Net effect: effective idle-to-lock becomes
+#   TIMEOUT, it still locks when you are genuinely away, and the profile is untouched.
+#
+# Usage
+#   screensaver-extend on           install + load the LaunchAgent (auto-start at login)
+#   screensaver-extend off          unload the LaunchAgent (revert to the MDM timeout)
+#   screensaver-extend set <min>    change the timeout in minutes, then reload
+#   screensaver-extend status       show config + live state
+#   screensaver-extend restart      reload the agent
+#   screensaver-extend run          the daemon loop itself (invoked by the LaunchAgent)
+
+set -u
+
+# --- resolve this script's own absolute path (following symlinks) so the
+#     LaunchAgent points at the real file wherever it was installed ---
+_src="${BASH_SOURCE[0]:-$0}"
+while [ -h "$_src" ]; do
+    _dir="$(cd -P "$(dirname "$_src")" >/dev/null 2>&1 && pwd)"
+    _src="$(readlink "$_src")"
+    case "$_src" in /*) ;; *) _src="$_dir/$_src";; esac
+done
+SELF="$(cd -P "$(dirname "$_src")" >/dev/null 2>&1 && pwd)/$(basename "$_src")"
+
+LABEL="com.local.screensaver-extend"
+CONF="$HOME/.config/screensaver-extend.conf"
+STATE_DIR="$HOME/.local/state/screensaver-extend"
+CAFF_PIDFILE="$STATE_DIR/caffeinate.pid"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG="$STATE_DIR/daemon.log"
+
+IOREG=/usr/sbin/ioreg
+CAFFEINATE=/usr/bin/caffeinate
+AWK=/usr/bin/awk
+
+# ---- defaults (overridden by CONF) ----
+TIMEOUT_MIN=30
+POLL_SEC=15
+
+GUI="gui/$(id -u)"
+
+mkdir -p "$STATE_DIR" "$(dirname "$CONF")" >/dev/null 2>&1
+
+load_conf() { [ -f "$CONF" ] && . "$CONF"; return 0; }
+
+# Real HID idle time in whole seconds (keyboard/trackpad), unaffected by the assertion.
+idle_sec() {
+    "$IOREG" -c IOHIDSystem | "$AWK" '/HIDIdleTime/ {print int($NF/1000000000); exit}'
+}
+
+caff_alive() {
+    [ -f "$CAFF_PIDFILE" ] || return 1
+    local p; p=$(cat "$CAFF_PIDFILE" 2>/dev/null)
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null
+}
+
+caff_start() {
+    caff_alive && return 0
+    "$CAFFEINATE" -d &
+    echo $! > "$CAFF_PIDFILE"
+}
+
+caff_stop() {
+    if [ -f "$CAFF_PIDFILE" ]; then
+        local p; p=$(cat "$CAFF_PIDFILE" 2>/dev/null)
+        [ -n "$p" ] && kill "$p" 2>/dev/null
+        rm -f "$CAFF_PIDFILE"
+    fi
+}
+
+agent_loaded() { launchctl print "$GUI/$LABEL" >/dev/null 2>&1; }
+
+write_conf() {
+    cat > "$CONF" <<EOF
+# screensaver-extend configuration
+# Lock the screen only after this many minutes of REAL inactivity
+# (overrides the MDM-forced screensaver timeout while this daemon runs).
+TIMEOUT_MIN=$TIMEOUT_MIN
+# How often (seconds) to sample idle time.
+POLL_SEC=$POLL_SEC
+EOF
+}
+
+write_plist() {
+    cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$SELF</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>$LOG</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG</string>
+</dict>
+</plist>
+EOF
+}
+
+cmd_run() {
+    load_conf
+    local timeout=$(( TIMEOUT_MIN * 60 ))
+    caff_stop   # clear any stale caffeinate child leaked by a previous hard kill
+    trap 'caff_stop; exit 0' INT TERM EXIT
+    echo "$(date '+%F %T') start: timeout=${TIMEOUT_MIN}min poll=${POLL_SEC}s" >> "$LOG"
+    while true; do
+        local idle; idle=$(idle_sec)
+        if [ -n "$idle" ] && [ "$idle" -lt "$timeout" ]; then
+            caff_start
+        else
+            caff_stop   # genuinely idle past the threshold -> let the OS lock
+        fi
+        sleep "$POLL_SEC"
+    done
+}
+
+cmd_on() {
+    load_conf
+    write_conf
+    write_plist
+    # If already loaded, just restart in place — never bootout-then-bootstrap,
+    # because bootout is async and an immediate bootstrap loses the teardown race.
+    if agent_loaded; then
+        launchctl kickstart -k "$GUI/$LABEL" >/dev/null 2>&1
+        echo "reloaded $LABEL (timeout=${TIMEOUT_MIN}min). Screen locks after ${TIMEOUT_MIN} min idle."
+        return 0
+    fi
+    # Not loaded -> bootstrap, with a few retries in case a prior instance is still
+    # tearing down (bootout is asynchronous).
+    local i
+    for i in 1 2 3 4 5; do
+        if launchctl bootstrap "$GUI" "$PLIST" 2>/dev/null; then
+            echo "loaded $LABEL (timeout=${TIMEOUT_MIN}min). Screen now locks after ${TIMEOUT_MIN} min idle."
+            return 0
+        fi
+        sleep 1
+    done
+    echo "failed to load $LABEL — try manually: launchctl bootstrap $GUI \"$PLIST\""
+    return 1
+}
+
+cmd_off() {
+    launchctl bootout "$GUI/$LABEL" >/dev/null 2>&1
+    caff_stop
+    echo "unloaded $LABEL — reverted to the MDM-enforced screensaver timeout."
+}
+
+cmd_set() {
+    local min="${1:-}"
+    case "$min" in
+        ''|*[!0-9]*) echo "usage: screensaver-extend set <minutes>  (positive integer)"; return 1;;
+    esac
+    [ "$min" -lt 1 ] && { echo "minutes must be >= 1"; return 1; }
+    load_conf
+    TIMEOUT_MIN="$min"
+    write_conf
+    echo "set TIMEOUT_MIN=$min"
+    if agent_loaded; then
+        launchctl kickstart -k "$GUI/$LABEL" >/dev/null 2>&1 && echo "reloaded agent"
+    fi
+}
+
+cmd_status() {
+    load_conf
+    echo "config   : $CONF"
+    echo "timeout  : ${TIMEOUT_MIN} min    poll: ${POLL_SEC}s"
+    if agent_loaded; then echo "agent    : loaded"; else echo "agent    : NOT loaded"; fi
+    local idle; idle=$(idle_sec)
+    echo "idle now : ${idle:-?}s"
+    if caff_alive; then
+        echo "assertion: HELD (screensaver suppressed)"
+    else
+        echo "assertion: released"
+    fi
+    local mp="/Library/Managed Preferences/$(whoami)/com.apple.screensaver"
+    echo "MDM force: idleTime=$(defaults read "$mp" idleTime 2>/dev/null || echo '?')s, askForPassword=$(defaults read "$mp" askForPassword 2>/dev/null || echo '?')"
+}
+
+usage() {
+    cat <<EOF
+screensaver-extend (ss-ext) — extend the macOS screensaver/auto-lock idle timeout
+without modifying a managed configuration profile.
+
+  screensaver-extend on           install + load the LaunchAgent (auto-start at login)
+  screensaver-extend off          unload the LaunchAgent (revert to the MDM timeout)
+  screensaver-extend set <min>    change the timeout (minutes) and reload
+  screensaver-extend status       show config + live state
+  screensaver-extend restart      reload the agent
+
+Config: $CONF  (TIMEOUT_MIN, POLL_SEC)
+EOF
+}
+
+case "${1:-}" in
+    run)              cmd_run;;
+    on)               cmd_on;;
+    off)              cmd_off;;
+    set)              shift; cmd_set "${1:-}";;
+    status)           cmd_status;;
+    restart)          agent_loaded && launchctl kickstart -k "$GUI/$LABEL" && echo "restarted" || echo "agent not loaded";;
+    -h|--help|help|"") usage;;
+    *)                echo "unknown command: $1"; echo; usage; exit 1;;
+esac
