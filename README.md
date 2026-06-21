@@ -34,6 +34,11 @@ macOS fires the screen saver after `com.apple.screensaver idleTime` seconds of *
 
 The assertion never resets the idle counter, so the OS locks promptly once you cross your timeout. Net effect: effective idle-to-lock = your timeout; profile untouched.
 
+## Battery & lid behavior
+
+- **On battery, the override pauses by default** (`AC_ONLY=1`). When you're not plugged in, the daemon releases the assertion and your machine reverts to the MDM-enforced timeout — so an unplugged laptop in your bag locks promptly and saves power. Plug back in and the 30-minute override resumes within one poll. Want it on battery too? `screensaver-extend ac-only off`.
+- **Closing the lid always sleeps.** The daemon holds *only* `PreventUserIdleDisplaySleep` — the weakest assertion. It suppresses the idle screen saver but does **not** touch clamshell (lid-close) sleep, which is a separate path. Shut the lid and the Mac sleeps normally, override or not.
+
 ## Requirements
 
 - macOS. Uses only built-in `caffeinate`, `ioreg`, `launchctl`, `defaults`, `bash`.
@@ -59,28 +64,34 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Usage
 
 ```bash
-screensaver-extend on          # install + load the LaunchAgent (auto-start at login)
-screensaver-extend off         # unload — revert to the MDM-enforced timeout
-screensaver-extend set 45      # change the timeout to 45 minutes (hot-reloads)
-screensaver-extend status      # show config + live state
-screensaver-extend restart     # restart the daemon
+screensaver-extend on             # install + load the LaunchAgent (auto-start at login)
+screensaver-extend off            # unload — revert to the MDM-enforced timeout
+screensaver-extend set 45         # change the idle timeout to 45 minutes (hot-reloads)
+screensaver-extend ac-only off    # also override on battery (default: on = AC only)
+screensaver-extend config         # print all settings (or: config KEY VALUE to set one)
+screensaver-extend status         # show config + live state
+screensaver-extend restart        # restart the daemon
 ```
 
 Configuration lives in `~/.config/screensaver-extend.conf`:
 
 ```bash
 TIMEOUT_MIN=30   # lock after this many minutes of real inactivity
-POLL_SEC=15      # how often (seconds) to sample idle time
+POLL_SEC=15      # how often (seconds) to sample idle time and power source
+AC_ONLY=1        # 1 = only override on AC power; on battery, fall back to the MDM timeout
 ```
 
-Edit it and `screensaver-extend restart`, or just use `set <min>`.
+Every key is toggleable from the CLI — `screensaver-extend config TIMEOUT_MIN 45`,
+`screensaver-extend ac-only off`, etc. — or edit the file and `screensaver-extend restart`.
+Changes hot-reload the running agent.
 
 ### `status` example
 
 ```
 config   : /Users/you/.config/screensaver-extend.conf
-timeout  : 30 min    poll: 15s
+timeout  : 30 min    poll: 15s    ac-only: on
 agent    : loaded
+power    : AC
 idle now : 124s
 assertion: HELD (screensaver suppressed)
 MDM force: idleTime=300s, askForPassword=1
@@ -112,9 +123,9 @@ If your MDM forces, say, 5 minutes (`idleTime=300`) and you stay idle **past 300
 
 ## Notes & caveats
 
-- **Manual lock still works** — hot corners, `Ctrl-Cmd-Q`, and closing the lid are unaffected (the assertion only suppresses *idle-triggered* sleep).
-- **Battery**: the display is kept awake the same way on battery. Want AC-only behavior? Run `off` on battery (PRs welcome).
+- **Manual lock still works** — hot corners and `Ctrl-Cmd-Q` are unaffected; the assertion only suppresses *idle-triggered* sleep. (Lid close and battery behavior are covered above.)
 - **Corporate policy**: this changes only *your* local idle window and keeps the password lock intact. Make sure that's consistent with your organization's acceptable-use policy. It only touches power assertions and a user LaunchAgent — it never edits `/Library/Managed Preferences` or the profile.
+- **Testing**: set `SSEXT_FORCE_POWER=ac|battery` to override power-source detection (used to exercise the `AC_ONLY` path without unplugging).
 
 ## License
 
