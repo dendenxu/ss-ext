@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# screensaver-extend (ss-ext) — extend an MDM-forced short screensaver / auto-lock
+# ssext (screensaver-extend) — extend an MDM-forced short screensaver / auto-lock
 # timeout on macOS WITHOUT modifying the managed configuration profile.
 #
 # How it works
@@ -22,14 +22,14 @@
 #   closing the lid sleeps normally.
 #
 # Usage
-#   screensaver-extend on              install + load the LaunchAgent (auto-start at login)
-#   screensaver-extend off             unload the LaunchAgent (revert to the MDM timeout)
-#   screensaver-extend set <min>       change the idle timeout (minutes), then reload
-#   screensaver-extend ac-only <on|off> only override while on AC power (battery -> off)
-#   screensaver-extend config [K V]    show all config, or set any key (TIMEOUT_MIN/POLL_SEC/AC_ONLY)
-#   screensaver-extend status          show config + live state
-#   screensaver-extend restart         reload the agent
-#   screensaver-extend run             the daemon loop itself (invoked by the LaunchAgent)
+#   ssext on               install + load the LaunchAgent (auto-start at login)
+#   ssext off              unload the LaunchAgent (revert to the MDM timeout)
+#   ssext set <min>        change the idle timeout (minutes), then reload
+#   ssext ac-only <on|off> only override while on AC power (battery -> off)
+#   ssext config [K V]     show all config, or set any key (TIMEOUT_MIN/POLL_SEC/AC_ONLY)
+#   ssext status           show config + live state
+#   ssext restart          reload the agent
+#   ssext run              the daemon loop itself (invoked by the LaunchAgent)
 #
 # Advanced: set SSEXT_FORCE_POWER=ac|battery to override power-source detection
 # (mainly for testing the AC_ONLY behaviour without unplugging).
@@ -46,9 +46,13 @@ while [ -h "$_src" ]; do
 done
 SELF="$(cd -P "$(dirname "$_src")" >/dev/null 2>&1 && pwd)/$(basename "$_src")"
 
-LABEL="com.local.screensaver-extend"
-CONF="$HOME/.config/screensaver-extend.conf"
-STATE_DIR="$HOME/.local/state/screensaver-extend"
+# The program name drives the whole namespace, so renaming the binary renames
+# its config, state, and LaunchAgent label too.
+PROG="$(basename "$SELF")"
+
+LABEL="com.local.$PROG"
+CONF="$HOME/.config/$PROG.conf"
+STATE_DIR="$HOME/.local/state/$PROG"
 CAFF_PIDFILE="$STATE_DIR/caffeinate.pid"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$STATE_DIR/daemon.log"
@@ -114,7 +118,7 @@ reload_if_loaded() {
 
 write_conf() {
     cat > "$CONF" <<EOF
-# screensaver-extend configuration
+# $PROG configuration
 # Lock the screen only after this many minutes of REAL inactivity
 # (overrides the MDM-forced screensaver timeout while this daemon runs).
 TIMEOUT_MIN=$TIMEOUT_MIN
@@ -213,7 +217,7 @@ cmd_config() {
         return 0
     fi
     local key="$1" val="${2:-}"
-    [ -n "$val" ] || { echo "usage: screensaver-extend config <KEY> <VALUE>   (keys: $KNOWN_KEYS)"; return 1; }
+    [ -n "$val" ] || { echo "usage: $PROG config <KEY> <VALUE>   (keys: $KNOWN_KEYS)"; return 1; }
     case "$key" in
         TIMEOUT_MIN|POLL_SEC)
             case "$val" in ''|*[!0-9]*) echo "$key must be a positive integer"; return 1;; esac
@@ -254,16 +258,16 @@ cmd_status() {
 
 usage() {
     cat <<EOF
-screensaver-extend (ss-ext) — extend the macOS screensaver/auto-lock idle timeout
+$PROG (screensaver-extend) — extend the macOS screensaver/auto-lock idle timeout
 without modifying a managed configuration profile.
 
-  screensaver-extend on               install + load the LaunchAgent (auto-start at login)
-  screensaver-extend off              unload the LaunchAgent (revert to the MDM timeout)
-  screensaver-extend set <min>        change the idle timeout (minutes) and reload
-  screensaver-extend ac-only <on|off> only override on AC power (battery -> off). default: on
-  screensaver-extend config [K V]     show all config, or set TIMEOUT_MIN/POLL_SEC/AC_ONLY
-  screensaver-extend status           show config + live state
-  screensaver-extend restart          reload the agent
+  $PROG on               install + load the LaunchAgent (auto-start at login)
+  $PROG off              unload the LaunchAgent (revert to the MDM timeout)
+  $PROG set <min>        change the idle timeout (minutes) and reload
+  $PROG ac-only <on|off> only override on AC power (battery -> off). default: on
+  $PROG config [K V]     show all config, or set TIMEOUT_MIN/POLL_SEC/AC_ONLY
+  $PROG status           show config + live state
+  $PROG restart          reload the agent
 
 Config file: $CONF
 EOF

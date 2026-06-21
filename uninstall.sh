@@ -1,17 +1,20 @@
 #!/bin/bash
-# Remove screensaver-extend: unload the agent and delete the binary, plist,
-# config and state. Reverts to the MDM-enforced screensaver timeout.
+# Remove ssext: unload the agent and delete the binary, plist, config and state.
+# Reverts to the MDM-enforced screensaver timeout.
 set -uo pipefail
 
 PREFIX="${PREFIX:-$HOME/.local/bin}"
-DST="$PREFIX/screensaver-extend"
-LABEL="com.local.screensaver-extend"
+GUI="gui/$(id -u)"
 
-[ -x "$DST" ] && "$DST" off || launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-
-rm -f "$DST"
-rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
-rm -f "$HOME/.config/screensaver-extend.conf"
-rm -rf "$HOME/.local/state/screensaver-extend"
+# Clean up both the current name and the legacy one, to be safe.
+for name in ssext screensaver-extend; do
+    label="com.local.$name"
+    bin="$PREFIX/$name"
+    [ -x "$bin" ] && "$bin" off 2>/dev/null || launchctl bootout "$GUI/$label" 2>/dev/null || true
+    rm -f "$bin"
+    rm -f "$HOME/Library/LaunchAgents/$label.plist"
+    rm -f "$HOME/.config/$name.conf"
+    rm -rf "$HOME/.local/state/$name"
+done
 
 echo "uninstalled — reverted to the MDM-enforced screensaver timeout."

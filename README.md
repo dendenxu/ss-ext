@@ -1,4 +1,4 @@
-# ss-ext — `screensaver-extend`
+# ss-ext — `ssext`
 
 **Extend a too-short, MDM-enforced screen-saver / auto-lock timeout on macOS — without touching the managed profile.**
 
@@ -10,8 +10,8 @@ Many corporate-managed Macs ship a configuration profile that forces the screen 
 git clone https://github.com/dendenxu/ss-ext.git
 cd ss-ext
 ./install.sh
-screensaver-extend on        # default 30 min; auto-starts at login
-screensaver-extend set 45    # ...or pick your own
+ssext on        # default 30 min; auto-starts at login
+ssext set 45    # ...or pick your own
 ```
 
 ## What it is / isn't
@@ -36,7 +36,7 @@ The assertion never resets the idle counter, so the OS locks promptly once you c
 
 ## Battery & lid behavior
 
-- **On battery, the override pauses by default** (`AC_ONLY=1`). When you're not plugged in, the daemon releases the assertion and your machine reverts to the MDM-enforced timeout — so an unplugged laptop in your bag locks promptly and saves power. Plug back in and the 30-minute override resumes within one poll. Want it on battery too? `screensaver-extend ac-only off`.
+- **On battery, the override pauses by default** (`AC_ONLY=1`). When you're not plugged in, the daemon releases the assertion and your machine reverts to the MDM-enforced timeout — so an unplugged laptop in your bag locks promptly and saves power. Plug back in and the 30-minute override resumes within one poll. Want it on battery too? `ssext ac-only off`.
 - **Closing the lid always sleeps.** The daemon holds *only* `PreventUserIdleDisplaySleep` — the weakest assertion. It suppresses the idle screen saver but does **not** touch clamshell (lid-close) sleep, which is a separate path. Shut the lid and the Mac sleeps normally, override or not.
 
 ## Requirements
@@ -49,8 +49,8 @@ The assertion never resets the idle counter, so the OS locks promptly once you c
 ```bash
 git clone https://github.com/dendenxu/ss-ext.git
 cd ss-ext
-./install.sh                 # copies to ~/.local/bin/screensaver-extend
-screensaver-extend on        # start now + auto-start at login (default 30 min)
+./install.sh                 # copies to ~/.local/bin/ssext
+ssext on        # start now + auto-start at login (default 30 min)
 ```
 
 If `~/.local/bin` isn't on your `PATH`, add this to `~/.zshrc`:
@@ -64,16 +64,16 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Usage
 
 ```bash
-screensaver-extend on             # install + load the LaunchAgent (auto-start at login)
-screensaver-extend off            # unload — revert to the MDM-enforced timeout
-screensaver-extend set 45         # change the idle timeout to 45 minutes (hot-reloads)
-screensaver-extend ac-only off    # also override on battery (default: on = AC only)
-screensaver-extend config         # print all settings (or: config KEY VALUE to set one)
-screensaver-extend status         # show config + live state
-screensaver-extend restart        # restart the daemon
+ssext on             # install + load the LaunchAgent (auto-start at login)
+ssext off            # unload — revert to the MDM-enforced timeout
+ssext set 45         # change the idle timeout to 45 minutes (hot-reloads)
+ssext ac-only off    # also override on battery (default: on = AC only)
+ssext config         # print all settings (or: config KEY VALUE to set one)
+ssext status         # show config + live state
+ssext restart        # restart the daemon
 ```
 
-Configuration lives in `~/.config/screensaver-extend.conf`:
+Configuration lives in `~/.config/ssext.conf`:
 
 ```bash
 TIMEOUT_MIN=30   # lock after this many minutes of real inactivity
@@ -81,14 +81,14 @@ POLL_SEC=15      # how often (seconds) to sample idle time and power source
 AC_ONLY=1        # 1 = only override on AC power; on battery, fall back to the MDM timeout
 ```
 
-Every key is toggleable from the CLI — `screensaver-extend config TIMEOUT_MIN 45`,
-`screensaver-extend ac-only off`, etc. — or edit the file and `screensaver-extend restart`.
+Every key is toggleable from the CLI — `ssext config TIMEOUT_MIN 45`,
+`ssext ac-only off`, etc. — or edit the file and `ssext restart`.
 Changes hot-reload the running agent.
 
 ### `status` example
 
 ```
-config   : /Users/you/.config/screensaver-extend.conf
+config   : /Users/you/.config/ssext.conf
 timeout  : 30 min    poll: 15s    ac-only: on
 agent    : loaded
 power    : AC
@@ -111,7 +111,7 @@ If your MDM forces, say, 5 minutes (`idleTime=300`) and you stay idle **past 300
 
 ## How auto-start works
 
-`screensaver-extend on` writes `~/Library/LaunchAgents/com.local.screensaver-extend.plist` (`RunAtLoad` + `KeepAlive`) pointing at the installed script, and bootstraps it into your GUI session. It restarts on logout/login and if it ever exits.
+`ssext on` writes `~/Library/LaunchAgents/com.local.ssext.plist` (`RunAtLoad` + `KeepAlive`) pointing at the installed script, and bootstraps it into your GUI session. It restarts on logout/login and if it ever exits.
 
 > Implementation note: `on` uses `launchctl kickstart -k` when the agent is already loaded and only `bootstrap`s when it isn't — never `bootout` immediately followed by `bootstrap`, because `bootout` is asynchronous and the immediate `bootstrap` would lose the teardown race (a silent-failure footgun).
 
